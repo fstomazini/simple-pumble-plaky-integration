@@ -1,5 +1,4 @@
 import sqlite3
-
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -9,13 +8,8 @@ DATABASE_FILE = "tickets.db"
 
 @contextmanager
 def get_connection():
-    connection = sqlite3.connect(
-        DATABASE_FILE
-    )
-
-    connection.row_factory = (
-        sqlite3.Row
-    )
+    connection = sqlite3.connect(DATABASE_FILE)
+    connection.row_factory = sqlite3.Row
 
     try:
         yield connection
@@ -45,8 +39,7 @@ def ensure_column(
     connection.execute(
         f"""
         ALTER TABLE {table_name}
-        ADD COLUMN {column_name}
-        {column_definition}
+        ADD COLUMN {column_name} {column_definition}
         """
     )
 
@@ -55,16 +48,13 @@ def init_database():
     with get_connection() as connection:
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS
-            processed_messages (
+            CREATE TABLE IF NOT EXISTS processed_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pumble_message_id TEXT NOT NULL,
                 support_account TEXT NOT NULL,
                 pumble_channel_id TEXT NOT NULL,
                 plaky_item_id TEXT,
-                created_at DATETIME
-                    DEFAULT CURRENT_TIMESTAMP,
-
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(
                     pumble_message_id,
                     support_account
@@ -75,11 +65,9 @@ def init_database():
 
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS
-            integration_state (
+            CREATE TABLE IF NOT EXISTS integration_state (
                 support_account TEXT PRIMARY KEY,
-                initialized INTEGER
-                    NOT NULL DEFAULT 0,
+                initialized INTEGER NOT NULL DEFAULT 0,
                 initialized_at DATETIME
             )
             """
@@ -87,8 +75,7 @@ def init_database():
 
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS
-            tickets (
+            CREATE TABLE IF NOT EXISTS tickets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticket_code TEXT UNIQUE NOT NULL,
                 support_account TEXT NOT NULL,
@@ -101,9 +88,7 @@ def init_database():
                 description TEXT,
                 requested_at TEXT NOT NULL,
                 last_status TEXT,
-                created_at DATETIME
-                    DEFAULT CURRENT_TIMESTAMP,
-
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(
                     pumble_message_id,
                     support_account
@@ -117,6 +102,31 @@ def init_database():
             table_name="tickets",
             column_name="last_status",
             column_definition="TEXT",
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processed_plaky_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plaky_comment_id TEXT NOT NULL,
+                ticket_code TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(
+                    plaky_comment_id,
+                    ticket_code
+                )
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ticket_comment_state (
+                ticket_code TEXT PRIMARY KEY,
+                initialized INTEGER NOT NULL DEFAULT 0,
+                initialized_at DATETIME
+            )
+            """
         )
 
 
@@ -139,10 +149,7 @@ def is_message_processed(
             ),
         )
 
-        return (
-            cursor.fetchone()
-            is not None
-        )
+        return cursor.fetchone() is not None
 
 
 def mark_message_processed(
@@ -154,8 +161,7 @@ def mark_message_processed(
     with get_connection() as connection:
         connection.execute(
             """
-            INSERT OR IGNORE INTO
-            processed_messages (
+            INSERT OR IGNORE INTO processed_messages (
                 pumble_message_id,
                 support_account,
                 pumble_channel_id,
@@ -183,9 +189,7 @@ def is_account_initialized(
             WHERE support_account = ?
             LIMIT 1
             """,
-            (
-                support_account,
-            ),
+            (support_account,),
         )
 
         row = cursor.fetchone()
@@ -207,21 +211,14 @@ def mark_account_initialized(
                 initialized,
                 initialized_at
             )
-            VALUES (
-                ?,
-                1,
-                CURRENT_TIMESTAMP
-            )
+            VALUES (?, 1, CURRENT_TIMESTAMP)
 
             ON CONFLICT(support_account)
             DO UPDATE SET
                 initialized = 1,
-                initialized_at =
-                    CURRENT_TIMESTAMP
+                initialized_at = CURRENT_TIMESTAMP
             """,
-            (
-                support_account,
-            ),
+            (support_account,),
         )
 
 
@@ -245,16 +242,12 @@ def generate_ticket_code(
                 "+00:00",
             )
         )
-
         date_part = date.strftime(
             "%Y%m%d"
         )
-
     except Exception:
-        date_part = (
-            datetime.now().strftime(
-                "%Y%m%d"
-            )
+        date_part = datetime.now().strftime(
+            "%Y%m%d"
         )
 
     with get_connection() as connection:
@@ -274,9 +267,7 @@ def generate_ticket_code(
         max_sequence = 0
 
         for row in cursor.fetchall():
-            ticket_code = (
-                row["ticket_code"]
-            )
+            ticket_code = row["ticket_code"]
 
             try:
                 sequence = int(
@@ -285,23 +276,17 @@ def generate_ticket_code(
                         1,
                     )[1]
                 )
-
                 max_sequence = max(
                     max_sequence,
                     sequence,
                 )
-
             except Exception:
                 continue
-
-    sequence = (
-        max_sequence + 1
-    )
 
     return (
         f"{prefix}-"
         f"{date_part}-"
-        f"{sequence:04d}"
+        f"{max_sequence + 1:04d}"
     )
 
 
@@ -334,10 +319,7 @@ def create_ticket(
                 requested_at,
                 last_status
             )
-            VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?
-            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ticket_code,
@@ -353,6 +335,23 @@ def create_ticket(
                 last_status,
             ),
         )
+
+
+def get_ticket_by_code(
+    ticket_code: str,
+):
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            SELECT *
+            FROM tickets
+            WHERE UPPER(ticket_code) = UPPER(?)
+            LIMIT 1
+            """,
+            (ticket_code,),
+        )
+
+        return cursor.fetchone()
 
 
 def get_monitored_tickets():
@@ -385,4 +384,90 @@ def update_ticket_status(
                 status,
                 ticket_code,
             ),
+        )
+
+
+def is_plaky_comment_processed(
+    ticket_code: str,
+    comment_id: str,
+) -> bool:
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            SELECT 1
+            FROM processed_plaky_comments
+            WHERE ticket_code = ?
+              AND plaky_comment_id = ?
+            LIMIT 1
+            """,
+            (
+                ticket_code,
+                str(comment_id),
+            ),
+        )
+
+        return cursor.fetchone() is not None
+
+
+def mark_plaky_comment_processed(
+    ticket_code: str,
+    comment_id: str,
+):
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO processed_plaky_comments (
+                plaky_comment_id,
+                ticket_code
+            )
+            VALUES (?, ?)
+            """,
+            (
+                str(comment_id),
+                ticket_code,
+            ),
+        )
+
+
+def is_ticket_comment_sync_initialized(
+    ticket_code: str,
+) -> bool:
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            SELECT initialized
+            FROM ticket_comment_state
+            WHERE ticket_code = ?
+            LIMIT 1
+            """,
+            (ticket_code,),
+        )
+
+        row = cursor.fetchone()
+
+        return bool(
+            row
+            and row["initialized"]
+        )
+
+
+def mark_ticket_comment_sync_initialized(
+    ticket_code: str,
+):
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO ticket_comment_state (
+                ticket_code,
+                initialized,
+                initialized_at
+            )
+            VALUES (?, 1, CURRENT_TIMESTAMP)
+
+            ON CONFLICT(ticket_code)
+            DO UPDATE SET
+                initialized = 1,
+                initialized_at = CURRENT_TIMESTAMP
+            """,
+            (ticket_code,),
         )

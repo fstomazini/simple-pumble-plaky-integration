@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 
 from config import (
@@ -9,11 +10,16 @@ from database import (
     create_ticket,
     generate_ticket_code,
     get_monitored_tickets,
+    get_ticket_by_code,
     init_database,
     is_account_initialized,
     is_message_processed,
+    is_plaky_comment_processed,
+    is_ticket_comment_sync_initialized,
     mark_account_initialized,
     mark_message_processed,
+    mark_plaky_comment_processed,
+    mark_ticket_comment_sync_initialized,
     update_ticket_status,
 )
 from plaky import PlakyClient
@@ -43,18 +49,31 @@ PLAKY_STATUS_NAMES = {
     "3": "Done",
 }
 
+TICKET_COMMENT_PATTERN = re.compile(
+    r"^\s*#("
+    r"TI-\d{8}-\d{4}"
+    r"|AST-\d{8}-\d{4}"
+    r"|LDH-\d{8}-\d{4}"
+    r")\s*:\s*(.+?)\s*$",
+    re.IGNORECASE
+    | re.DOTALL,
+)
+
+CLIENT_COMMENT_PATTERN = re.compile(
+    r"(?im)^\s*#CLIENTE\s*:?\s*$"
+)
+
 
 # ============================================================
-# TEMPLATES
+# TEMPLATES / AJUDA
 # ============================================================
 
 
 def get_ticket_template_message(
     support_account: str,
 ) -> str:
-
     if support_account == "ti":
-        return """Olá! 👋
+        template = """Olá! 👋
 
 Para abrir um novo chamado de TI, envie sua solicitação em uma única mensagem usando este modelo:
 
@@ -70,12 +89,10 @@ Exemplo:
 
 Problema: Mouse não está funcionando
 Local / equipamento: Computador da recepção
-Detalhes: O mouse acende, mas não movimenta o cursor.
+Detalhes: O mouse acende, mas não movimenta o cursor."""
 
-Assim que a mensagem for enviada nesse formato, o chamado será registrado automaticamente."""
-
-    if support_account == "assisthemis":
-        return """Olá! 👋
+    elif support_account == "assisthemis":
+        template = """Olá! 👋
 
 Para registrar um problema no Assisthemis, envie sua solicitação em uma única mensagem usando este modelo:
 
@@ -95,12 +112,10 @@ Problema: Não consigo salvar um novo cliente
 O que estava fazendo: Realizando o cadastro de cliente
 O que aconteceu: Ao clicar em Salvar, a tela fica carregando
 O que deveria acontecer: O cadastro deveria ser concluído
-Cliente / processo: João da Silva
+Cliente / processo: João da Silva"""
 
-Assim que a mensagem for enviada nesse formato, o chamado será registrado automaticamente."""
-
-    if support_account == "liderhub":
-        return """Para registrar um problema no LiderHub, envie sua solicitação em uma única mensagem usando este modelo:
+    elif support_account == "liderhub":
+        template = """Para registrar um problema no LiderHub, envie sua solicitação em uma única mensagem usando este modelo:
 
 #NOVO-TICKET
 
@@ -134,20 +149,88 @@ Cliente / telefone: Cliente João da Silva
 
 Conexão: +55 51 9xxxx-xxxx
 
-workspace: Bancario
+workspace: Bancario"""
 
-Assim que a mensagem for enviada nesse formato, o chamado será registrado automaticamente."""
-
-    return """Para abrir um chamado, envie sua solicitação utilizando o marcador:
+    else:
+        template = """Para abrir um chamado, envie:
 
 #NOVO-TICKET"""
 
+    return (
+        f"{template}\n\n"
+        "Para adicionar uma informação a um chamado já existente, "
+        "envie o código do chamado seguido de ':' e da mensagem.\n\n"
+        "Exemplo:\n"
+        "#TI-20260902-0003 : O acesso parece ser intermitente.\n\n"
+        "Para consultar as instruções da integração, envie:\n"
+        "#AJUDA"
+    )
+
+
+def get_help_message(
+    support_account: str,
+) -> str:
+    examples = {
+        "ti": (
+            "#NOVO-TICKET\n\n"
+            "Problema: Não consigo acessar o sistema\n"
+            "Local / equipamento: Computador da recepção\n"
+            "Detalhes: O login apresenta erro."
+        ),
+        "assisthemis": (
+            "#NOVO-TICKET\n\n"
+            "Problema: Não consigo salvar um cliente\n"
+            "O que estava fazendo: Cadastrando um cliente\n"
+            "O que aconteceu: A tela fica carregando\n"
+            "O que deveria acontecer: O cadastro deveria ser salvo\n"
+            "Cliente / processo: João da Silva"
+        ),
+        "liderhub": (
+            "#NOVO-TICKET\n\n"
+            "Problema: Não consigo enviar mensagem\n"
+            "O que estava fazendo: Atendendo um cliente\n"
+            "O que aconteceu: A mensagem não foi enviada\n"
+            "O que deveria acontecer: A mensagem deveria ser enviada\n"
+            "Cliente / telefone: João / +55 51 9xxxx-xxxx\n"
+            "Conexão: +55 51 9xxxx-xxxx\n"
+            "workspace: Bancario"
+        ),
+    }
+
+    example = examples.get(
+        support_account,
+        "#NOVO-TICKET",
+    )
+
+    return (
+        "🛠️ Ajuda do Suporte\n\n"
+        "Esta conversa permite abrir, acompanhar e complementar chamados.\n\n"
+        "1. Abrir um novo chamado\n\n"
+        "Envie uma única mensagem no formato:\n\n"
+        f"{example}\n\n"
+        "2. Adicionar informação a um chamado existente\n\n"
+        "Use o código do chamado seguido de ':' e da nova informação.\n\n"
+        "Exemplo:\n"
+        "#TI-20260902-0003 : O acesso parece ser intermitente.\n\n"
+        "Tudo que estiver depois de ':' será adicionado como comentário "
+        "no chamado correspondente.\n\n"
+        "3. Atualizações enviadas pelo suporte\n\n"
+        "Quando a equipe registrar no Plaky um comentário marcado com "
+        "#CLIENTE, o conteúdo desse comentário será enviado automaticamente "
+        "para você nesta conversa.\n\n"
+        "Você não precisa usar #CLIENTE nas suas mensagens.\n\n"
+        "4. Alterações de status\n\n"
+        "Você poderá receber mensagens quando o chamado entrar na fila, "
+        "entrar em atendimento, ficar bloqueado ou for concluído.\n\n"
+        "Para visualizar estas instruções novamente, envie:\n"
+        "#AJUDA"
+    )
+
 
 def get_ticket_created_message(
-    support_account: str,
     ticket_code: str,
+    support_account: str,
 ) -> str:
-
     if support_account == "ti":
         return (
             f"✅ Chamado {ticket_code} criado com sucesso.\n\n"
@@ -178,25 +261,23 @@ def get_status_changed_message(
     ticket_code: str,
     status: str,
 ) -> str | None:
-
     status = str(status)
 
     if status == "1":
         return (
-            f"📋 O chamado {ticket_code} "
-            "entrou na fila de atendimento."
+            f"📋 O chamado {ticket_code} entrou na fila "
+            "de atendimento."
         )
 
     if status == "2":
         return (
-            f"🔄 O chamado {ticket_code} "
-            "está em atendimento."
+            f"🔄 O chamado {ticket_code} está em atendimento."
         )
 
     if status == "4":
         return (
-            f"⏸️ O chamado {ticket_code} "
-            "está temporariamente bloqueado.\n\n"
+            f"⏸️ O chamado {ticket_code} está temporariamente "
+            "bloqueado.\n\n"
             "Caso seja necessária alguma informação adicional, "
             "o suporte entrará em contato."
         )
@@ -210,44 +291,32 @@ def get_status_changed_message(
 
 
 # ============================================================
-# PARSE DE MENSAGENS
+# MENSAGENS / TEMPLATE / COMANDOS
 # ============================================================
 
 
 def extract_message_text(
     message: dict,
 ) -> str:
-
     text = message.get("text")
 
-    if (
-        isinstance(text, str)
-        and text.strip()
-    ):
+    if isinstance(text, str) and text.strip():
         return text.strip()
 
     texts = []
 
     def walk(value):
-
         if isinstance(value, dict):
-
             if value.get("type") == "text":
                 block_text = value.get("text")
 
-                if isinstance(
-                    block_text,
-                    str,
-                ):
-                    texts.append(
-                        block_text
-                    )
+                if isinstance(block_text, str):
+                    texts.append(block_text)
 
             for child in value.values():
                 walk(child)
 
         elif isinstance(value, list):
-
             for child in value:
                 walk(child)
 
@@ -264,10 +333,48 @@ def extract_message_text(
 def normalize_text(
     text: str,
 ) -> str:
+    return text.lower().strip()
+
+
+def is_help_command(
+    text: str,
+) -> bool:
     return (
+        normalize_text(text)
+        == "#ajuda"
+    )
+
+
+def parse_ticket_comment_command(
+    text: str,
+) -> tuple[str, str] | None:
+    if not text:
+        return None
+
+    match = TICKET_COMMENT_PATTERN.match(
         text
-        .lower()
+    )
+
+    if not match:
+        return None
+
+    ticket_code = (
+        match.group(1)
+        .upper()
         .strip()
+    )
+
+    comment = (
+        match.group(2)
+        .strip()
+    )
+
+    if not comment:
+        return None
+
+    return (
+        ticket_code,
+        comment,
     )
 
 
@@ -275,24 +382,15 @@ def extract_template_field(
     text: str,
     field_name: str,
 ) -> str | None:
-
     if not text:
         return None
 
-    target = (
-        field_name
-        .lower()
-        .strip()
-    )
+    target = field_name.lower().strip()
 
     for line in text.splitlines():
-
         line = line.strip()
 
-        if (
-            not line
-            or ":" not in line
-        ):
+        if not line or ":" not in line:
             continue
 
         key, value = line.split(
@@ -300,10 +398,7 @@ def extract_template_field(
             1,
         )
 
-        if (
-            key.lower().strip()
-            == target
-        ):
+        if key.lower().strip() == target:
             value = value.strip()
 
             if value:
@@ -316,18 +411,12 @@ def has_template_field(
     text: str,
     field_name: str,
 ) -> bool:
-
     if not text:
         return False
 
-    target = (
-        field_name
-        .lower()
-        .strip()
-    )
+    target = field_name.lower().strip()
 
     for line in text.splitlines():
-
         line = line.strip()
 
         if ":" not in line:
@@ -338,10 +427,7 @@ def has_template_field(
             1,
         )
 
-        if (
-            key.lower().strip()
-            == target
-        ):
+        if key.lower().strip() == target:
             return True
 
     return False
@@ -351,18 +437,15 @@ def is_ticket_template(
     text: str,
     support_account: str,
 ) -> bool:
-
     if not text:
         return False
 
-    if (
-        "#novo-ticket"
-        not in normalize_text(text)
-    ):
+    normalized = normalize_text(text)
+
+    if "#novo-ticket" not in normalized:
         return False
 
     if support_account == "ti":
-
         required_fields = [
             "Problema",
             "Local / equipamento",
@@ -370,7 +453,6 @@ def is_ticket_template(
         ]
 
     elif support_account == "assisthemis":
-
         required_fields = [
             "Problema",
             "O que estava fazendo",
@@ -380,7 +462,6 @@ def is_ticket_template(
         ]
 
     elif support_account == "liderhub":
-
         required_fields = [
             "Problema",
             "O que estava fazendo",
@@ -392,6 +473,10 @@ def is_ticket_template(
         ]
 
     else:
+        logger.warning(
+            "Conta de suporte desconhecida: %s",
+            support_account,
+        )
         return False
 
     return all(
@@ -406,10 +491,12 @@ def is_ticket_template(
 def build_ticket_title(
     message: dict,
 ) -> str:
-
     text = extract_message_text(
         message
     )
+
+    if not text:
+        return "Nova solicitação via Pumble"
 
     problem = extract_template_field(
         text=text,
@@ -434,7 +521,6 @@ def build_plaky_description(
     requester_name: str | None,
     text: str,
 ) -> str:
-
     name = (
         requester_name
         or "Não identificado"
@@ -443,7 +529,6 @@ def build_plaky_description(
     lines = []
 
     for line in text.splitlines():
-
         if (
             line.strip().lower()
             == "#novo-ticket"
@@ -462,8 +547,48 @@ def build_plaky_description(
     )
 
 
+def build_pumble_comment_for_plaky(
+    requester_name: str | None,
+    comment: str,
+) -> str:
+    name = (
+        requester_name
+        or "Solicitante"
+    )
+
+    return (
+        f"Atualização enviada pelo Pumble por {name}:\n\n"
+        f"{comment}"
+    )
+
+
+def extract_client_comment_text(
+    text: str,
+) -> str | None:
+    if not text:
+        return None
+
+    if not re.search(
+        r"(?i)#CLIENTE\b",
+        text,
+    ):
+        return None
+
+    cleaned = re.sub(
+        r"(?i)#CLIENTE\s*:?",
+        "",
+        text,
+        count=1,
+    ).strip()
+
+    if not cleaned:
+        return None
+
+    return cleaned
+
+
 # ============================================================
-# RESPOSTAS
+# RESPOSTA AUTOMÁTICA
 # ============================================================
 
 
@@ -471,21 +596,21 @@ def can_send_auto_reply(
     support_account: str,
     channel_id: str,
 ) -> bool:
-
     key = (
         support_account,
         channel_id,
     )
 
-    last_sent = (
-        last_auto_reply.get(key)
+    last_sent = last_auto_reply.get(
+        key
     )
 
     if last_sent is None:
         return True
 
     return (
-        time.time() - last_sent
+        time.time()
+        - last_sent
         >= AUTO_REPLY_COOLDOWN_SECONDS
     )
 
@@ -494,7 +619,6 @@ def register_auto_reply(
     support_account: str,
     channel_id: str,
 ):
-
     last_auto_reply[
         (
             support_account,
@@ -508,11 +632,16 @@ def send_ticket_instructions(
     pumble: PumbleClient,
     channel_id: str,
 ):
-
     if not can_send_auto_reply(
         support_account=account["key"],
         channel_id=channel_id,
     ):
+        logger.info(
+            "[%s] Instruções não enviadas "
+            "para DM %s: cooldown ativo.",
+            account["name"],
+            channel_id,
+        )
         return
 
     pumble.send_message(
@@ -529,32 +658,129 @@ def send_ticket_instructions(
     )
 
 
+def send_help(
+    account: dict,
+    pumble: PumbleClient,
+    channel_id: str,
+):
+    pumble.send_message(
+        channel_id=channel_id,
+        text=get_help_message(
+            account["key"]
+        ),
+        as_bot=False,
+    )
+
+
 def send_ticket_created_confirmation(
     account: dict,
     pumble: PumbleClient,
     channel_id: str,
     ticket_code: str,
 ):
-
     pumble.send_message(
         channel_id=channel_id,
         text=get_ticket_created_message(
-            support_account=account["key"],
             ticket_code=ticket_code,
+            support_account=account["key"],
         ),
         as_bot=False,
     )
 
 
 # ============================================================
-# PUMBLE
+# PLAKY / PUMBLE AUXILIARES
 # ============================================================
+
+
+def extract_plaky_item_id(
+    response: dict,
+):
+    if not isinstance(
+        response,
+        dict,
+    ):
+        return None
+
+    item_id = response.get("id")
+
+    if item_id is not None:
+        return str(item_id)
+
+    data = response.get("data")
+
+    if isinstance(data, dict):
+        item_id = data.get("id")
+
+        if item_id is not None:
+            return str(item_id)
+
+    return None
+
+
+def extract_plaky_comment_id(
+    response,
+):
+    if not isinstance(
+        response,
+        dict,
+    ):
+        return None
+
+    comment_id = response.get("id")
+
+    if comment_id is not None:
+        return str(comment_id)
+
+    data = response.get("data")
+
+    if isinstance(data, dict):
+        comment_id = data.get("id")
+
+        if comment_id is not None:
+            return str(comment_id)
+
+    return None
+
+
+def extract_plaky_comment_text(
+    comment: dict,
+) -> str:
+    for key in (
+        "text",
+        "content",
+        "body",
+    ):
+        value = comment.get(key)
+
+        if isinstance(
+            value,
+            str,
+        ):
+            return value.strip()
+
+    return ""
+
+
+def extract_plaky_comment_id_from_object(
+    comment: dict,
+) -> str | None:
+    for key in (
+        "id",
+        "itemCommentId",
+        "commentId",
+    ):
+        value = comment.get(key)
+
+        if value is not None:
+            return str(value)
+
+    return None
 
 
 def get_direct_channels(
     pumble: PumbleClient,
 ):
-
     channels = (
         pumble.list_channels()
     )
@@ -576,10 +802,13 @@ def get_direct_channels(
 def build_users_index(
     pumble: PumbleClient,
 ) -> dict:
+    users = (
+        pumble.list_users()
+    )
 
     return {
         user["id"]: user
-        for user in pumble.list_users()
+        for user in users
         if (
             isinstance(user, dict)
             and user.get("id")
@@ -591,7 +820,6 @@ def resolve_requester(
     message: dict,
     users_by_id: dict,
 ):
-
     requester_id = (
         message.get("author")
     )
@@ -603,17 +831,13 @@ def resolve_requester(
     )
 
     if requester:
-
         requester_name = (
             requester.get("name")
             or requester.get("email")
             or requester_id
         )
-
     else:
-        requester_name = (
-            requester_id
-        )
+        requester_name = requester_id
 
     return (
         requester_id,
@@ -621,17 +845,11 @@ def resolve_requester(
     )
 
 
-# ============================================================
-# NOTIFICAÇÃO DA EQUIPE
-# ============================================================
-
-
 def find_direct_channel_for_user(
     channels: list[dict],
     support_user_id: str,
     target_user_id: str,
 ) -> str | None:
-
     support_user_id = str(
         support_user_id
     )
@@ -641,11 +859,9 @@ def find_direct_channel_for_user(
     )
 
     for channel in channels:
-
-        if (
-            channel.get("channelType")
-            != "DIRECT"
-        ):
+        if channel.get(
+            "channelType"
+        ) != "DIRECT":
             continue
 
         if channel.get(
@@ -682,12 +898,9 @@ def notify_support_team(
     ticket_code: str,
     title: str,
 ):
-
-    notify_user_ids = (
-        account.get(
-            "notify_user_ids",
-            [],
-        )
+    notify_user_ids = account.get(
+        "notify_user_ids",
+        [],
     )
 
     if not notify_user_ids:
@@ -699,7 +912,7 @@ def notify_support_team(
         or "Não identificado"
     )
 
-    notification = (
+    message = (
         f"🆕 Novo chamado {ticket_code}\n\n"
         f"Fila: {account['name']}\n"
         f"Solicitante: {display_name}\n"
@@ -709,14 +922,10 @@ def notify_support_team(
     )
 
     for target_user_id in notify_user_ids:
-
         target_user_id = str(
             target_user_id
         )
 
-        # Não envia uma segunda mensagem
-        # caso o solicitante também seja
-        # responsável pelo suporte.
         if (
             requester_id
             and target_user_id
@@ -727,44 +936,28 @@ def notify_support_team(
         channel_id = (
             find_direct_channel_for_user(
                 channels=channels,
-                support_user_id=(
-                    support_user_id
-                ),
-                target_user_id=(
-                    target_user_id
-                ),
+                support_user_id=support_user_id,
+                target_user_id=target_user_id,
             )
         )
 
         if not channel_id:
-
             logger.warning(
                 "[%s] DM não encontrada "
                 "para responsável %s.",
                 account["name"],
                 target_user_id,
             )
-
             continue
 
         try:
-
             pumble.send_message(
                 channel_id=channel_id,
-                text=notification,
+                text=message,
                 as_bot=False,
             )
 
-            logger.info(
-                "[%s] Responsável %s "
-                "notificado sobre %s.",
-                account["name"],
-                target_user_id,
-                ticket_code,
-            )
-
         except Exception:
-
             logger.exception(
                 "[%s] Erro ao notificar "
                 "responsável %s sobre %s.",
@@ -774,44 +967,10 @@ def notify_support_team(
             )
 
 
-# ============================================================
-# PLAKY
-# ============================================================
-
-
-def extract_plaky_item_id(
-    response: dict,
-):
-
-    if not isinstance(
-        response,
-        dict,
-    ):
-        return None
-
-    item_id = response.get("id")
-
-    if item_id is not None:
-        return str(item_id)
-
-    data = response.get("data")
-
-    if isinstance(data, dict):
-
-        item_id = data.get("id")
-
-        if item_id is not None:
-            return str(item_id)
-
-    return None
-
-
 def get_support_account(
     support_account: str,
 ):
-
     for account in SUPPORT_ACCOUNTS:
-
         if (
             account["key"]
             == support_account
@@ -819,6 +978,148 @@ def get_support_account(
             return account
 
     return None
+
+
+# ============================================================
+# COMENTÁRIO PUMBLE -> PLAKY
+# ============================================================
+
+
+def handle_ticket_comment_command(
+    account: dict,
+    plaky: PlakyClient,
+    pumble: PumbleClient,
+    channel_id: str,
+    requester_id: str | None,
+    requester_name: str | None,
+    message_id: str,
+    ticket_code: str,
+    comment: str,
+):
+    ticket = get_ticket_by_code(
+        ticket_code
+    )
+
+    if not ticket:
+        pumble.send_message(
+            channel_id=channel_id,
+            text=(
+                f"⚠️ Não encontrei o chamado {ticket_code}."
+            ),
+            as_bot=False,
+        )
+
+        mark_message_processed(
+            message_id=message_id,
+            support_account=account["key"],
+            channel_id=channel_id,
+            plaky_item_id=None,
+        )
+        return
+
+    if (
+        ticket["support_account"]
+        != account["key"]
+    ):
+        pumble.send_message(
+            channel_id=channel_id,
+            text=(
+                f"⚠️ O chamado {ticket_code} pertence "
+                "a outra fila de suporte."
+            ),
+            as_bot=False,
+        )
+
+        mark_message_processed(
+            message_id=message_id,
+            support_account=account["key"],
+            channel_id=channel_id,
+            plaky_item_id=None,
+        )
+        return
+
+    if (
+        str(ticket["pumble_channel_id"])
+        != str(channel_id)
+    ):
+        pumble.send_message(
+            channel_id=channel_id,
+            text=(
+                "⚠️ Este chamado não pertence "
+                "a esta conversa."
+            ),
+            as_bot=False,
+        )
+
+        mark_message_processed(
+            message_id=message_id,
+            support_account=account["key"],
+            channel_id=channel_id,
+            plaky_item_id=None,
+        )
+        return
+
+    plaky_item_id = (
+        ticket["plaky_item_id"]
+    )
+
+    if not plaky_item_id:
+        raise RuntimeError(
+            f"Ticket {ticket_code} "
+            "não possui item Plaky associado."
+        )
+
+    plaky_comment_text = (
+        build_pumble_comment_for_plaky(
+            requester_name=requester_name,
+            comment=comment,
+        )
+    )
+
+    response = plaky.create_comment(
+        board_id=account[
+            "plaky_board_id"
+        ],
+        item_id=int(
+            plaky_item_id
+        ),
+        text=plaky_comment_text,
+    )
+
+    created_comment_id = (
+        extract_plaky_comment_id(
+            response
+        )
+    )
+
+    if created_comment_id:
+        mark_plaky_comment_processed(
+            ticket_code=ticket_code,
+            comment_id=created_comment_id,
+        )
+
+    mark_message_processed(
+        message_id=message_id,
+        support_account=account["key"],
+        channel_id=channel_id,
+        plaky_item_id=plaky_item_id,
+    )
+
+    pumble.send_message(
+        channel_id=channel_id,
+        text=(
+            f"💬 Atualização adicionada ao chamado "
+            f"{ticket_code}."
+        ),
+        as_bot=False,
+    )
+
+    logger.info(
+        "[%s] Comentário enviado do Pumble "
+        "para o ticket %s.",
+        account["name"],
+        ticket_code,
+    )
 
 
 # ============================================================
@@ -831,7 +1132,6 @@ def bootstrap_account(
     pumble: PumbleClient,
     support_user_id: str,
 ):
-
     logger.info(
         "[%s] Primeira execução. "
         "Registrando mensagens existentes "
@@ -848,7 +1148,6 @@ def bootstrap_account(
     marked_count = 0
 
     for channel in channels:
-
         channel_id = (
             channel.get("id")
         )
@@ -857,27 +1156,22 @@ def bootstrap_account(
             continue
 
         try:
-
             messages = (
                 pumble.list_messages(
                     channel_id=channel_id,
                     limit=50,
                 )
             )
-
         except Exception:
-
             logger.exception(
                 "[%s] Erro lendo mensagens "
                 "durante bootstrap da DM %s",
                 account["name"],
                 channel_id,
             )
-
             continue
 
         for message in messages:
-
             message_id = (
                 message.get("id")
             )
@@ -897,9 +1191,7 @@ def bootstrap_account(
 
             mark_message_processed(
                 message_id=message_id,
-                support_account=account[
-                    "key"
-                ],
+                support_account=account["key"],
                 channel_id=channel_id,
                 plaky_item_id=None,
             )
@@ -919,7 +1211,7 @@ def bootstrap_account(
 
 
 # ============================================================
-# NOVOS TICKETS
+# PROCESSAMENTO DE MENSAGENS
 # ============================================================
 
 
@@ -927,7 +1219,6 @@ def process_account(
     account: dict,
     plaky: PlakyClient,
 ):
-
     pumble = PumbleClient(
         account["pumble_api_key"]
     )
@@ -941,24 +1232,19 @@ def process_account(
     )
 
     if not support_user_id:
-
         raise RuntimeError(
-            "Não foi possível identificar "
+            f"Não foi possível identificar "
             f"a conta {account['name']}"
         )
 
     if not is_account_initialized(
         account["key"]
     ):
-
         bootstrap_account(
             account=account,
             pumble=pumble,
-            support_user_id=(
-                support_user_id
-            ),
+            support_user_id=support_user_id,
         )
-
         return
 
     users_by_id = (
@@ -980,7 +1266,6 @@ def process_account(
     )
 
     for channel in channels:
-
         channel_id = (
             channel.get("id")
         )
@@ -989,22 +1274,18 @@ def process_account(
             continue
 
         try:
-
             messages = (
                 pumble.list_messages(
                     channel_id=channel_id,
                     limit=50,
                 )
             )
-
         except Exception:
-
             logger.exception(
                 "[%s] Erro lendo DM %s",
                 account["name"],
                 channel_id,
             )
-
             continue
 
         messages.sort(
@@ -1016,7 +1297,6 @@ def process_account(
         )
 
         for message in messages:
-
             message_id = (
                 message.get("id")
             )
@@ -1028,8 +1308,6 @@ def process_account(
             if not message_id:
                 continue
 
-            # Ignora mensagens enviadas pela própria
-            # conta de suporte.
             if (
                 str(author_id)
                 == str(support_user_id)
@@ -1038,9 +1316,7 @@ def process_account(
 
             if is_message_processed(
                 message_id=message_id,
-                support_account=account[
-                    "key"
-                ],
+                support_account=account["key"],
             ):
                 continue
 
@@ -1050,54 +1326,114 @@ def process_account(
                 )
             )
 
+            (
+                requester_id,
+                requester_name,
+            ) = resolve_requester(
+                message=message,
+                users_by_id=users_by_id,
+            )
+
+            # ----------------------------------------------------
+            # #AJUDA
+            # ----------------------------------------------------
+
+            if is_help_command(text):
+                try:
+                    send_help(
+                        account=account,
+                        pumble=pumble,
+                        channel_id=channel_id,
+                    )
+                finally:
+                    mark_message_processed(
+                        message_id=message_id,
+                        support_account=account["key"],
+                        channel_id=channel_id,
+                        plaky_item_id=None,
+                    )
+
+                continue
+
+            # ----------------------------------------------------
+            # #CODIGO : comentário
+            # ----------------------------------------------------
+
+            ticket_comment = (
+                parse_ticket_comment_command(
+                    text
+                )
+            )
+
+            if ticket_comment:
+                (
+                    ticket_code,
+                    comment,
+                ) = ticket_comment
+
+                try:
+                    handle_ticket_comment_command(
+                        account=account,
+                        plaky=plaky,
+                        pumble=pumble,
+                        channel_id=channel_id,
+                        requester_id=requester_id,
+                        requester_name=requester_name,
+                        message_id=message_id,
+                        ticket_code=ticket_code,
+                        comment=comment,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[%s] Erro adicionando comentário "
+                        "ao ticket %s.",
+                        account["name"],
+                        ticket_code,
+                    )
+
+                continue
+
             # ----------------------------------------------------
             # NÃO É TICKET
             # ----------------------------------------------------
 
             if not is_ticket_template(
                 text=text,
-                support_account=account[
-                    "key"
-                ],
+                support_account=account["key"],
             ):
-
                 logger.info(
                     "[%s] Mensagem %s ignorada: "
-                    "não corresponde ao template.",
+                    "não corresponde ao template "
+                    "#NOVO-TICKET.",
                     account["name"],
                     message_id,
                 )
 
                 try:
-
                     send_ticket_instructions(
                         account=account,
                         pumble=pumble,
                         channel_id=channel_id,
                     )
-
                 except Exception:
-
                     logger.exception(
-                        "[%s] Erro enviando "
-                        "instruções para DM %s.",
+                        "[%s] Erro ao enviar "
+                        "instruções de abertura "
+                        "de ticket para DM %s.",
                         account["name"],
                         channel_id,
                     )
 
                 mark_message_processed(
                     message_id=message_id,
-                    support_account=account[
-                        "key"
-                    ],
+                    support_account=account["key"],
                     channel_id=channel_id,
                     plaky_item_id=None,
                 )
-
                 continue
 
             # ----------------------------------------------------
-            # TICKET VÁLIDO
+            # NOVO TICKET
             # ----------------------------------------------------
 
             title = (
@@ -1115,22 +1451,10 @@ def process_account(
                 )
             )
 
-            (
-                requester_id,
-                requester_name,
-            ) = resolve_requester(
-                message=message,
-                users_by_id=users_by_id,
-            )
-
             ticket_code = (
                 generate_ticket_code(
-                    support_account=account[
-                        "key"
-                    ],
-                    requested_at=(
-                        requested_at
-                    ),
+                    support_account=account["key"],
+                    requested_at=requested_at,
                 )
             )
 
@@ -1141,9 +1465,7 @@ def process_account(
 
             plaky_description = (
                 build_plaky_description(
-                    requester_name=(
-                        requester_name
-                    ),
+                    requester_name=requester_name,
                     text=text,
                 )
             )
@@ -1158,7 +1480,6 @@ def process_account(
             )
 
             try:
-
                 response = (
                     plaky.create_item(
                         board_id=account[
@@ -1178,7 +1499,6 @@ def process_account(
                 )
 
                 if not plaky_item_id:
-
                     raise RuntimeError(
                         "Plaky criou o item, "
                         "mas não retornou itemId."
@@ -1188,142 +1508,256 @@ def process_account(
                     plaky_item_id
                 )
 
-                # DESCRIPTION
                 try:
-
                     plaky.set_description(
                         board_id=account[
                             "plaky_board_id"
                         ],
                         item_id=item_id,
-                        description=(
-                            plaky_description
-                        ),
+                        description=plaky_description,
                     )
-
                 except Exception:
-
                     logger.exception(
                         "[%s] Ticket %s criado, "
-                        "mas Description falhou.",
+                        "mas ocorreu erro ao preencher "
+                        "Description.",
                         account["name"],
                         ticket_code,
                     )
 
-                # DATE
                 try:
-
                     plaky.set_date(
                         board_id=account[
                             "plaky_board_id"
                         ],
                         item_id=item_id,
-                        requested_at=(
-                            requested_at
-                        ),
+                        requested_at=requested_at,
                     )
-
                 except Exception:
-
                     logger.exception(
                         "[%s] Ticket %s criado, "
-                        "mas Date falhou.",
+                        "mas ocorreu erro ao preencher Date.",
                         account["name"],
                         ticket_code,
                     )
 
-                # IMPORTANTE:
-                # persistimos antes de qualquer
-                # mensagem de confirmação/notificação.
                 create_ticket(
                     ticket_code=ticket_code,
-                    support_account=account[
-                        "key"
-                    ],
+                    support_account=account["key"],
                     requester_id=requester_id,
-                    requester_name=(
-                        requester_name
-                    ),
+                    requester_name=requester_name,
                     channel_id=channel_id,
                     message_id=message_id,
-                    plaky_item_id=(
-                        plaky_item_id
-                    ),
+                    plaky_item_id=plaky_item_id,
                     title=title,
                     description=text,
-                    requested_at=(
-                        requested_at
-                    ),
+                    requested_at=requested_at,
                     last_status="0",
+                )
+
+                mark_ticket_comment_sync_initialized(
+                    ticket_code
                 )
 
                 mark_message_processed(
                     message_id=message_id,
-                    support_account=account[
-                        "key"
-                    ],
+                    support_account=account["key"],
                     channel_id=channel_id,
-                    plaky_item_id=(
-                        plaky_item_id
-                    ),
+                    plaky_item_id=plaky_item_id,
                 )
 
-                # CONFIRMA SOLICITANTE
                 try:
-
                     send_ticket_created_confirmation(
                         account=account,
                         pumble=pumble,
                         channel_id=channel_id,
-                        ticket_code=(
-                            ticket_code
-                        ),
+                        ticket_code=ticket_code,
                     )
-
                 except Exception:
-
                     logger.exception(
-                        "[%s] Ticket %s criado, "
-                        "mas confirmação falhou.",
+                        "[%s] Ticket %s foi criado, "
+                        "mas ocorreu erro ao enviar "
+                        "a confirmação pelo Pumble.",
                         account["name"],
                         ticket_code,
                     )
 
-                # NOTIFICA RESPONSÁVEIS
                 notify_support_team(
                     account=account,
                     pumble=pumble,
                     channels=channels,
-                    support_user_id=(
-                        support_user_id
-                    ),
-                    requester_id=(
-                        requester_id
-                    ),
-                    requester_name=(
-                        requester_name
-                    ),
-                    ticket_code=(
-                        ticket_code
-                    ),
+                    support_user_id=support_user_id,
+                    requester_id=requester_id,
+                    requester_name=requester_name,
+                    ticket_code=ticket_code,
                     title=title,
                 )
 
-                logger.info(
-                    "[%s] Ticket %s criado "
-                    "com sucesso. Plaky=%s",
-                    account["name"],
-                    ticket_code,
-                    plaky_item_id,
-                )
-
             except Exception:
-
                 logger.exception(
                     "[%s] Erro criando ticket "
                     "para mensagem %s",
                     account["name"],
                     message_id,
+                )
+
+
+# ============================================================
+# MONITORAMENTO DE COMENTÁRIOS PLAKY -> PUMBLE
+# ============================================================
+
+
+def monitor_ticket_comments(
+    plaky: PlakyClient,
+):
+    tickets = (
+        get_monitored_tickets()
+    )
+
+    for ticket in tickets:
+        ticket_code = (
+            ticket["ticket_code"]
+        )
+
+        account = (
+            get_support_account(
+                ticket[
+                    "support_account"
+                ]
+            )
+        )
+
+        if not account:
+            continue
+
+        plaky_item_id = (
+            ticket["plaky_item_id"]
+        )
+
+        if not plaky_item_id:
+            continue
+
+        try:
+            comments = (
+                plaky.list_comments(
+                    board_id=account[
+                        "plaky_board_id"
+                    ],
+                    item_id=int(
+                        plaky_item_id
+                    ),
+                )
+            )
+        except Exception:
+            logger.exception(
+                "[%s] Erro consultando comentários "
+                "do ticket %s.",
+                account["name"],
+                ticket_code,
+            )
+            continue
+
+        # Tickets que já existiam antes desta funcionalidade
+        # apenas registram o histórico na primeira leitura.
+        if not is_ticket_comment_sync_initialized(
+            ticket_code
+        ):
+            for comment in comments:
+                comment_id = (
+                    extract_plaky_comment_id_from_object(
+                        comment
+                    )
+                )
+
+                if comment_id:
+                    mark_plaky_comment_processed(
+                        ticket_code=ticket_code,
+                        comment_id=comment_id,
+                    )
+
+            mark_ticket_comment_sync_initialized(
+                ticket_code
+            )
+
+            logger.info(
+                "[%s] Sincronização inicial de "
+                "comentários do ticket %s concluída.",
+                account["name"],
+                ticket_code,
+            )
+            continue
+
+        for comment in comments:
+            comment_id = (
+                extract_plaky_comment_id_from_object(
+                    comment
+                )
+            )
+
+            if not comment_id:
+                continue
+
+            if is_plaky_comment_processed(
+                ticket_code=ticket_code,
+                comment_id=comment_id,
+            ):
+                continue
+
+            text = (
+                extract_plaky_comment_text(
+                    comment
+                )
+            )
+
+            client_text = (
+                extract_client_comment_text(
+                    text
+                )
+            )
+
+            # Marcamos antes da entrega para não gerar
+            # múltiplos envios em todos os pollings.
+            mark_plaky_comment_processed(
+                ticket_code=ticket_code,
+                comment_id=comment_id,
+            )
+
+            if not client_text:
+                continue
+
+            try:
+                pumble = PumbleClient(
+                    account[
+                        "pumble_api_key"
+                    ]
+                )
+
+                pumble.send_message(
+                    channel_id=ticket[
+                        "pumble_channel_id"
+                    ],
+                    text=(
+                        f"💬 Atualização no chamado "
+                        f"{ticket_code}\n\n"
+                        f"{client_text}"
+                    ),
+                    as_bot=False,
+                )
+
+                logger.info(
+                    "[%s] Comentário #CLIENTE "
+                    "do ticket %s enviado ao solicitante.",
+                    account["name"],
+                    ticket_code,
+                )
+
+            except Exception:
+                logger.exception(
+                    "[%s] Comentário #CLIENTE "
+                    "do ticket %s foi registrado, "
+                    "mas não pôde ser enviado ao Pumble.",
+                    account["name"],
+                    ticket_code,
                 )
 
 
@@ -1335,7 +1769,6 @@ def process_account(
 def normalize_plaky_status(
     status,
 ) -> str | None:
-
     if status is None:
         return None
 
@@ -1349,38 +1782,37 @@ def normalize_plaky_status(
         status,
         dict,
     ):
-
         for key in (
             "id",
             "value",
             "key",
         ):
-
-            value = status.get(key)
+            value = status.get(
+                key
+            )
 
             if value is not None:
                 return str(value)
 
-        title = status.get(
-            "title"
-        )
+        title = status.get("title")
 
         if title:
-
             normalized_title = (
                 str(title)
                 .strip()
                 .lower()
             )
 
-            return {
+            by_title = {
                 "backlog": "0",
                 "to do": "1",
                 "todo": "1",
                 "in progress": "2",
                 "blocked": "4",
                 "done": "3",
-            }.get(
+            }
+
+            return by_title.get(
                 normalized_title,
                 str(title),
             )
@@ -1391,7 +1823,6 @@ def normalize_plaky_status(
 def monitor_ticket_statuses(
     plaky: PlakyClient,
 ):
-
     tickets = (
         get_monitored_tickets()
     )
@@ -1400,7 +1831,6 @@ def monitor_ticket_statuses(
         return
 
     for ticket in tickets:
-
         ticket_code = (
             ticket["ticket_code"]
         )
@@ -1409,7 +1839,6 @@ def monitor_ticket_statuses(
             ticket["last_status"]
         )
 
-        # Ticket concluído deixa de ser consultado.
         if (
             str(previous_status)
             == "3"
@@ -1427,17 +1856,21 @@ def monitor_ticket_statuses(
         if not account:
             continue
 
-        try:
+        plaky_item_id = (
+            ticket["plaky_item_id"]
+        )
 
+        if not plaky_item_id:
+            continue
+
+        try:
             raw_status = (
                 plaky.get_item_status(
                     board_id=account[
                         "plaky_board_id"
                     ],
                     item_id=int(
-                        ticket[
-                            "plaky_item_id"
-                        ]
+                        plaky_item_id
                     ),
                 )
             )
@@ -1449,14 +1882,12 @@ def monitor_ticket_statuses(
             )
 
         except Exception:
-
             logger.exception(
-                "[%s] Erro consultando "
-                "status do ticket %s.",
+                "[%s] Erro consultando status "
+                "do ticket %s no Plaky.",
                 account["name"],
                 ticket_code,
             )
-
             continue
 
         if current_status is None:
@@ -1470,12 +1901,10 @@ def monitor_ticket_statuses(
         )
 
         if previous_status is None:
-
             update_ticket_status(
                 ticket_code=ticket_code,
                 status=current_status,
             )
-
             continue
 
         if (
@@ -1484,21 +1913,6 @@ def monitor_ticket_statuses(
         ):
             continue
 
-        logger.info(
-            "[%s] Ticket %s mudou: %s -> %s",
-            account["name"],
-            ticket_code,
-            PLAKY_STATUS_NAMES.get(
-                previous_status,
-                previous_status,
-            ),
-            PLAKY_STATUS_NAMES.get(
-                current_status,
-                current_status,
-            ),
-        )
-
-        # Persiste ANTES da notificação.
         update_ticket_status(
             ticket_code=ticket_code,
             status=current_status,
@@ -1515,7 +1929,6 @@ def monitor_ticket_statuses(
             continue
 
         try:
-
             pumble = PumbleClient(
                 account[
                     "pumble_api_key"
@@ -1531,13 +1944,14 @@ def monitor_ticket_statuses(
             )
 
         except Exception:
-
             logger.exception(
-                "[%s] Status atualizado, "
-                "mas notificação do "
-                "ticket %s falhou.",
+                "[%s] Status do ticket %s "
+                "foi atualizado para %s, "
+                "mas ocorreu erro ao notificar "
+                "o solicitante.",
                 account["name"],
                 ticket_code,
+                current_status,
             )
 
 
@@ -1547,7 +1961,6 @@ def monitor_ticket_statuses(
 
 
 def main():
-
     logger.info(
         "Iniciando integração "
         "Pumble -> Plaky"
@@ -1555,37 +1968,41 @@ def main():
 
     init_database()
 
-    plaky = PlakyClient()
+    plaky = (
+        PlakyClient()
+    )
 
     while True:
-
         for account in SUPPORT_ACCOUNTS:
-
             try:
-
                 process_account(
                     account=account,
                     plaky=plaky,
                 )
-
             except Exception:
-
                 logger.exception(
                     "Erro processando conta %s",
                     account["name"],
                 )
 
         try:
-
             monitor_ticket_statuses(
                 plaky=plaky
             )
-
         except Exception:
-
             logger.exception(
                 "Erro geral durante "
                 "monitoramento dos tickets."
+            )
+
+        try:
+            monitor_ticket_comments(
+                plaky=plaky
+            )
+        except Exception:
+            logger.exception(
+                "Erro geral durante "
+                "monitoramento de comentários."
             )
 
         logger.info(

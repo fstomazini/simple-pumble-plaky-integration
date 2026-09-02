@@ -8,12 +8,8 @@ from config import (
 
 
 class PlakyClient:
-
     def __init__(self):
-        self.session = (
-            requests.Session()
-        )
-
+        self.session = requests.Session()
         self.session.headers.update({
             "X-API-Key": PLAKY_API_KEY,
             "Accept": "application/json",
@@ -33,19 +29,16 @@ class PlakyClient:
             f"/items"
         )
 
-        payload = {
-            "title": title,
-            "groupId": group_id,
-        }
-
         response = self.session.post(
             url,
-            json=payload,
+            json={
+                "title": title,
+                "groupId": group_id,
+            },
             timeout=30,
         )
 
         response.raise_for_status()
-
         return response.json()
 
     def update_field(
@@ -137,16 +130,14 @@ class PlakyClient:
         users=None,
         teams=None,
     ):
-        value = {
-            "users": users or [],
-            "teams": teams or [],
-        }
-
         return self.update_field(
             board_id=board_id,
             item_id=item_id,
             field_key="person-1",
-            value=value,
+            value={
+                "users": users or [],
+                "teams": teams or [],
+            },
         )
 
     def get_item(
@@ -170,7 +161,6 @@ class PlakyClient:
         )
 
         response.raise_for_status()
-
         return response.json()
 
     def get_item_field_value(
@@ -258,3 +248,91 @@ class PlakyClient:
             item_id=item_id,
             field_key="status-1",
         )
+
+    def list_comments(
+        self,
+        board_id: int,
+        item_id: int,
+    ) -> list[dict]:
+        url = (
+            f"{PLAKY_BASE_URL}"
+            f"/spaces/{PLAKY_SPACE_ID}"
+            f"/boards/{board_id}"
+            f"/items/{item_id}"
+            f"/comments"
+        )
+
+        response = self.session.get(
+            url,
+            timeout=30,
+        )
+
+        response.raise_for_status()
+
+        payload = response.json()
+
+        if isinstance(
+            payload,
+            list,
+        ):
+            return payload
+
+        if isinstance(
+            payload,
+            dict,
+        ):
+            for key in (
+                "data",
+                "comments",
+            ):
+                value = payload.get(
+                    key
+                )
+
+                if isinstance(
+                    value,
+                    list,
+                ):
+                    return value
+
+        raise ValueError(
+            "Formato inesperado ao listar "
+            f"comentários do Plaky: {payload}"
+        )
+
+    def create_comment(
+        self,
+        board_id: int,
+        item_id: int,
+        text: str,
+        replies_to_id: int | None = None,
+    ):
+        url = (
+            f"{PLAKY_BASE_URL}"
+            f"/spaces/{PLAKY_SPACE_ID}"
+            f"/boards/{board_id}"
+            f"/items/{item_id}"
+            f"/comments"
+        )
+
+        payload = {
+            "text": text,
+        }
+
+        if replies_to_id is not None:
+            payload[
+                "repliesToId"
+            ] = replies_to_id
+
+        response = self.session.post(
+            url,
+            json=payload,
+            timeout=30,
+        )
+
+        response.raise_for_status()
+
+        if not response.content:
+            return None
+
+        return response.json()
