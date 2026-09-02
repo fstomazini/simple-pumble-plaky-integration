@@ -1,8 +1,22 @@
 import os
+
 from dotenv import load_dotenv
 
 
 load_dotenv()
+
+
+def parse_user_ids(
+    value: str | None,
+) -> list[str]:
+    if not value:
+        return []
+
+    return [
+        user_id.strip()
+        for user_id in value.split(",")
+        if user_id.strip()
+    ]
 
 
 PUMBLE_BASE_URL = (
@@ -19,7 +33,6 @@ POLL_INTERVAL_SECONDS = int(
         "30",
     )
 )
-
 
 PLAKY_API_KEY = os.environ[
     "PLAKY_API_KEY"
@@ -49,6 +62,11 @@ SUPPORT_ACCOUNTS = [
                 "PLAKY_TI_GROUP_ID"
             ]
         ),
+        "notify_user_ids": parse_user_ids(
+            os.getenv(
+                "PUMBLE_TI_NOTIFY_USER_IDS"
+            )
+        ),
     },
     {
         "key": "assisthemis",
@@ -66,6 +84,11 @@ SUPPORT_ACCOUNTS = [
                 "PLAKY_ASSISTHEMIS_GROUP_ID"
             ]
         ),
+        "notify_user_ids": parse_user_ids(
+            os.getenv(
+                "PUMBLE_ASSISTHEMIS_NOTIFY_USER_IDS"
+            )
+        ),
     },
     {
         "key": "liderhub",
@@ -82,6 +105,11 @@ SUPPORT_ACCOUNTS = [
             os.environ[
                 "PLAKY_LIDERHUB_GROUP_ID"
             ]
+        ),
+        "notify_user_ids": parse_user_ids(
+            os.getenv(
+                "PUMBLE_LIDERHUB_NOTIFY_USER_IDS"
+            )
         ),
     },
 ]

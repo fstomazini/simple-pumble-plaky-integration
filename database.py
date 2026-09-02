@@ -1,4 +1,5 @@
 import sqlite3
+
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -19,7 +20,6 @@ def get_connection():
     try:
         yield connection
         connection.commit()
-
     finally:
         connection.close()
 
@@ -45,7 +45,8 @@ def ensure_column(
     connection.execute(
         f"""
         ALTER TABLE {table_name}
-        ADD COLUMN {column_name} {column_definition}
+        ADD COLUMN {column_name}
+        {column_definition}
         """
     )
 
@@ -54,23 +55,31 @@ def init_database():
     with get_connection() as connection:
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS processed_messages (
+            CREATE TABLE IF NOT EXISTS
+            processed_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pumble_message_id TEXT NOT NULL,
                 support_account TEXT NOT NULL,
                 pumble_channel_id TEXT NOT NULL,
                 plaky_item_id TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(pumble_message_id, support_account)
+                created_at DATETIME
+                    DEFAULT CURRENT_TIMESTAMP,
+
+                UNIQUE(
+                    pumble_message_id,
+                    support_account
+                )
             )
             """
         )
 
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS integration_state (
+            CREATE TABLE IF NOT EXISTS
+            integration_state (
                 support_account TEXT PRIMARY KEY,
-                initialized INTEGER NOT NULL DEFAULT 0,
+                initialized INTEGER
+                    NOT NULL DEFAULT 0,
                 initialized_at DATETIME
             )
             """
@@ -78,7 +87,8 @@ def init_database():
 
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS tickets (
+            CREATE TABLE IF NOT EXISTS
+            tickets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticket_code TEXT UNIQUE NOT NULL,
                 support_account TEXT NOT NULL,
@@ -91,8 +101,13 @@ def init_database():
                 description TEXT,
                 requested_at TEXT NOT NULL,
                 last_status TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(pumble_message_id, support_account)
+                created_at DATETIME
+                    DEFAULT CURRENT_TIMESTAMP,
+
+                UNIQUE(
+                    pumble_message_id,
+                    support_account
+                )
             )
             """
         )
@@ -109,7 +124,6 @@ def is_message_processed(
     message_id: str,
     support_account: str,
 ) -> bool:
-
     with get_connection() as connection:
         cursor = connection.execute(
             """
@@ -137,11 +151,11 @@ def mark_message_processed(
     channel_id: str,
     plaky_item_id: str | None = None,
 ):
-
     with get_connection() as connection:
         connection.execute(
             """
-            INSERT OR IGNORE INTO processed_messages (
+            INSERT OR IGNORE INTO
+            processed_messages (
                 pumble_message_id,
                 support_account,
                 pumble_channel_id,
@@ -161,7 +175,6 @@ def mark_message_processed(
 def is_account_initialized(
     support_account: str,
 ) -> bool:
-
     with get_connection() as connection:
         cursor = connection.execute(
             """
@@ -186,7 +199,6 @@ def is_account_initialized(
 def mark_account_initialized(
     support_account: str,
 ):
-
     with get_connection() as connection:
         connection.execute(
             """
@@ -195,12 +207,17 @@ def mark_account_initialized(
                 initialized,
                 initialized_at
             )
-            VALUES (?, 1, CURRENT_TIMESTAMP)
+            VALUES (
+                ?,
+                1,
+                CURRENT_TIMESTAMP
+            )
 
             ON CONFLICT(support_account)
             DO UPDATE SET
                 initialized = 1,
-                initialized_at = CURRENT_TIMESTAMP
+                initialized_at =
+                    CURRENT_TIMESTAMP
             """,
             (
                 support_account,
@@ -212,7 +229,6 @@ def generate_ticket_code(
     support_account: str,
     requested_at: str,
 ) -> str:
-
     prefix = {
         "ti": "TI",
         "assisthemis": "AST",
@@ -230,10 +246,8 @@ def generate_ticket_code(
             )
         )
 
-        date_part = (
-            date.strftime(
-                "%Y%m%d"
-            )
+        date_part = date.strftime(
+            "%Y%m%d"
         )
 
     except Exception:
@@ -304,7 +318,6 @@ def create_ticket(
     requested_at: str,
     last_status: str | None = None,
 ):
-
     with get_connection() as connection:
         connection.execute(
             """
@@ -321,7 +334,10 @@ def create_ticket(
                 requested_at,
                 last_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?
+            )
             """,
             (
                 ticket_code,
@@ -337,48 +353,6 @@ def create_ticket(
                 last_status,
             ),
         )
-
-
-def get_ticket_by_code(
-    ticket_code: str,
-):
-
-    with get_connection() as connection:
-        cursor = connection.execute(
-            """
-            SELECT *
-            FROM tickets
-            WHERE ticket_code = ?
-            LIMIT 1
-            """,
-            (
-                ticket_code,
-            ),
-        )
-
-        return cursor.fetchone()
-
-
-def get_ticket_by_plaky_item_id(
-    plaky_item_id: str,
-):
-
-    with get_connection() as connection:
-        cursor = connection.execute(
-            """
-            SELECT *
-            FROM tickets
-            WHERE plaky_item_id = ?
-            LIMIT 1
-            """,
-            (
-                str(
-                    plaky_item_id
-                ),
-            ),
-        )
-
-        return cursor.fetchone()
 
 
 def get_monitored_tickets():
@@ -400,7 +374,6 @@ def update_ticket_status(
     ticket_code: str,
     status: str,
 ):
-
     with get_connection() as connection:
         connection.execute(
             """
@@ -413,30 +386,3 @@ def update_ticket_status(
                 ticket_code,
             ),
         )
-
-
-def get_ticket_last_status(
-    ticket_code: str,
-) -> str | None:
-
-    with get_connection() as connection:
-        cursor = connection.execute(
-            """
-            SELECT last_status
-            FROM tickets
-            WHERE ticket_code = ?
-            LIMIT 1
-            """,
-            (
-                ticket_code,
-            ),
-        )
-
-        row = cursor.fetchone()
-
-        if not row:
-            return None
-
-        return row[
-            "last_status"
-        ]
