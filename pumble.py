@@ -1,11 +1,10 @@
 import requests
 
-from config import (
-    PUMBLE_BASE_URL,
-)
+from config import PUMBLE_BASE_URL
 
 
 class PumbleClient:
+
     def __init__(
         self,
         api_key: str,
@@ -25,12 +24,10 @@ class PumbleClient:
         path: str,
         params=None,
     ):
-        response = (
-            self.session.get(
-                f"{PUMBLE_BASE_URL}{path}",
-                params=params,
-                timeout=30,
-            )
+        response = self.session.get(
+            f"{PUMBLE_BASE_URL}{path}",
+            params=params,
+            timeout=30,
         )
 
         response.raise_for_status()
@@ -59,10 +56,8 @@ class PumbleClient:
         channels = []
 
         for item in response:
-            channel = (
-                item.get(
-                    "channel"
-                )
+            channel = item.get(
+                "channel"
             )
 
             if not isinstance(
@@ -92,10 +87,8 @@ class PumbleClient:
         response = self._get(
             "/listMessages",
             params={
-                "channelId":
-                    channel_id,
-                "limit":
-                    limit,
+                "channelId": channel_id,
+                "limit": limit,
             },
         )
 
@@ -113,10 +106,8 @@ class PumbleClient:
                 "messages",
                 "data",
             ):
-                value = (
-                    response.get(
-                        key
-                    )
+                value = response.get(
+                    key
                 )
 
                 if isinstance(
@@ -149,10 +140,8 @@ class PumbleClient:
                 "users",
                 "data",
             ):
-                value = (
-                    response.get(
-                        key
-                    )
+                value = response.get(
+                    key
                 )
 
                 if isinstance(
@@ -186,21 +175,15 @@ class PumbleClient:
             )
 
         payload = {
-            "channelId":
-                channel_id,
-            "text":
-                text.strip(),
-            "asBot":
-                as_bot,
+            "channelId": channel_id,
+            "text": text.strip(),
+            "asBot": as_bot,
         }
 
-        response = (
-            self.session.post(
-                f"{PUMBLE_BASE_URL}"
-                f"/sendMessage",
-                json=payload,
-                timeout=30,
-            )
+        response = self.session.post(
+            f"{PUMBLE_BASE_URL}/sendMessage",
+            json=payload,
+            timeout=30,
         )
 
         response.raise_for_status()
@@ -213,8 +196,10 @@ class PumbleClient:
 
         except ValueError:
             return {
-                "status_code":
-                    response.status_code,
-                "text":
-                    response.text,
+                "status_code": (
+                    response.status_code
+                ),
+                "text": (
+                    response.text
+                ),
             }

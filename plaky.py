@@ -8,18 +8,16 @@ from config import (
 
 
 class PlakyClient:
+
     def __init__(self):
         self.session = (
             requests.Session()
         )
 
         self.session.headers.update({
-            "X-API-Key":
-                PLAKY_API_KEY,
-            "Accept":
-                "application/json",
-            "Content-Type":
-                "application/json",
+            "X-API-Key": PLAKY_API_KEY,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
         })
 
     def create_item(
@@ -40,12 +38,10 @@ class PlakyClient:
             "groupId": group_id,
         }
 
-        response = (
-            self.session.post(
-                url,
-                json=payload,
-                timeout=30,
-            )
+        response = self.session.post(
+            url,
+            json=payload,
+            timeout=30,
         )
 
         response.raise_for_status()
@@ -67,16 +63,12 @@ class PlakyClient:
             f"/fields/{field_key}"
         )
 
-        payload = {
-            "value": value
-        }
-
-        response = (
-            self.session.patch(
-                url,
-                json=payload,
-                timeout=30,
-            )
+        response = self.session.patch(
+            url,
+            json={
+                "value": value,
+            },
+            timeout=30,
         )
 
         response.raise_for_status()
@@ -146,10 +138,8 @@ class PlakyClient:
         teams=None,
     ):
         value = {
-            "users":
-                users or [],
-            "teams":
-                teams or [],
+            "users": users or [],
+            "teams": teams or [],
         }
 
         return self.update_field(
@@ -171,14 +161,12 @@ class PlakyClient:
             f"/items/{item_id}"
         )
 
-        response = (
-            self.session.get(
-                url,
-                params={
-                    "expand": "fields",
-                },
-                timeout=30,
-            )
+        response = self.session.get(
+            url,
+            params={
+                "expand": "fields",
+            },
+            timeout=30,
         )
 
         response.raise_for_status()
@@ -212,42 +200,27 @@ class PlakyClient:
         ):
             current_key = (
                 value.get("key")
-                or value.get(
-                    "fieldKey"
-                )
+                or value.get("fieldKey")
                 or value.get(
                     "itemFieldKey"
                 )
             )
 
-            if (
-                current_key
-                == field_key
-            ):
+            if current_key == field_key:
                 if "value" in value:
-                    return value[
-                        "value"
-                    ]
+                    return value["value"]
 
-                if (
-                    "selectedValue"
-                    in value
-                ):
+                if "selectedValue" in value:
                     return value[
                         "selectedValue"
                     ]
 
-                if (
-                    "selectedValues"
-                    in value
-                ):
+                if "selectedValues" in value:
                     return value[
                         "selectedValues"
                     ]
 
-            for child in (
-                value.values()
-            ):
+            for child in value.values():
                 result = (
                     self._find_field_value(
                         child,
@@ -280,10 +253,8 @@ class PlakyClient:
         board_id: int,
         item_id: int,
     ):
-        return (
-            self.get_item_field_value(
-                board_id=board_id,
-                item_id=item_id,
-                field_key="status-1",
-            )
+        return self.get_item_field_value(
+            board_id=board_id,
+            item_id=item_id,
+            field_key="status-1",
         )
